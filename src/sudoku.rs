@@ -1,4 +1,6 @@
 use std::fmt;
+use itertools::Itertools;
+use std::convert::TryInto;
 
 #[derive(Clone, PartialEq)]
 struct Cell {
@@ -6,6 +8,11 @@ struct Cell {
 }
 
 impl Cell {
+    // ...
+    pub fn from_choices_list(choices: [bool; 9]) -> Self {
+        Cell { choices: choices }
+    }
+
     // ...
     pub fn unwrap(&self) -> Option<usize> {
         let mut choices = self.choices.iter();
@@ -30,6 +37,12 @@ impl Cell {
     // ...
     pub fn unset_at(&mut self, n: usize) { self.choices[n-1] = false; }
 
+    // ...
+    pub fn size(&self) -> usize {
+        self.choices.iter().fold(0, |acc, x| if *x {acc+1} else {acc})
+    }
+
+    // ...
     pub fn difference(&self, other: &Self) -> Self {
         let mut diff = self.clone();
         for n in 1..=9 {
@@ -43,7 +56,7 @@ impl Cell {
 
 impl Default for Cell {
     fn default() -> Self {
-        Cell { choices: [true, true, true, true, true, true, true, true, true] }
+        Cell { choices: [true; 9] }
     }
 }
 
@@ -87,106 +100,53 @@ impl Sudoku {
         diff
     }
 
-    pub fn reduce(&self) -> Self {
+    pub fn reduce(&self, order: usize) -> Self {
         let mut sudoku_updated = self.clone();
+
         for row in 0..9 {
-            for col in 0..9 {
-                match self.board[row][col].unwrap() {
-                    Some(n) => {
-                        for r in 0..9 {
-                            if r != row {
-                                sudoku_updated.board[r][col].unset_at(n);
-                            }
-                        }
-                        for c in 0..9 {
-                            if c != col {
-                                sudoku_updated.board[row][c].unset_at(n);
-                            }
-                        }
-                        let district_row = row - row % 3;
-                        let district_col = col - col % 3;
-                        for r in district_row..district_row+3 {
-                            for c in district_col..district_col+3 {
-                                if r != row && c != col {
-                                    sudoku_updated.board[r][c].unset_at(n);
-                                }
-                            }
-                        }
-                    }, 
-                    None => {}, 
-                }
-            }
+            let coords = (0..9).map(|col| (col, row));
+            let coords: [(usize, usize); 9] = coords.collect::<Vec<_>>().try_into().unwrap();
+            self.reduce_core(&mut sudoku_updated, coords, order);
         }
-        sudoku_updated
-    }
-    
-    pub fn induce(&self) -> Self {
-        let mut sudoku_updated = self.clone();
+        
         for col in 0..9 {
-            let mut counts = [0; 9];
-            for row in 0..9 {
-                let cell = &self.board[row][col];
-                for n in 0..9 {
-                    if cell.can_be(n+1) { counts[n] += 1; }
-                }
-            }
-            for n in 0..9 {
-                if counts[n] == 1 {
-                    for row in 0..9 {
-                        let cell = &mut sudoku_updated.board[row][col];
-                        if cell.can_be(n+1) { cell.identify(n+1); }
-                    }
-                }
-            }
+            let coords = (0..9).map(|row| (col, row));
+            let coords: [(usize, usize); 9] = coords.collect::<Vec<_>>().try_into().unwrap();
+            self.reduce_core(&mut sudoku_updated, coords, order);
         }
         
-        for row in 0..9 {
-            let mut counts = [0; 9];
-            for col in 0..9 {
-                let cell = &self.board[row][col];
-                for n in 0..9 {
-                    if cell.can_be(n+1) { counts[n] += 1; }
-                }
-            }
-            for n in 0..9 {
-                if counts[n] == 1 {
-                    for col in 0..9 {
-                        let cell = &mut sudoku_updated.board[row][col];
-                        if cell.can_be(n+1) { cell.identify(n+1); }
-                    }
-                }
-            }
-        }
-        
-        // println!("{}", sudoku_updated);
         for district_row in (0..9).step_by(3) {
             for district_col in (0..9).step_by(3) {
-                // println!("({}, {})", district_col, district_row);
-                let mut counts = [0; 9];
-                for r in district_row..district_row+3 {
-                    for c in district_col..district_col+3 {
-                        let cell = &self.board[r][c];
-                        for n in 0..9 {
-                            if cell.can_be(n+1) { counts[n] += 1; }
-                        }
-                    }
-                }
-                // println!("({}, {}): {}", district_col, district_row, counts.iter().map(|x| x.to_string()+",").collect::<String>());
-                for n in 0..9 {
-                    if counts[n] == 1 {
-                        for r in district_row..district_row+3 {
-                            for c in district_col..district_col+3 {
-                                let cell = &mut sudoku_updated.board[r][c];
-                                if cell.can_be(n+1) { cell.identify(n+1); }
-                            }
-                        }
+                let coords = (district_col..district_col+3).cartesian_product(district_row..district_row+3);
+                let coords: [(usize, usize); 9] = coords.collect::<Vec<_>>().try_into().unwrap();
+                self.reduce_core(&mut sudoku_updated, coords, order);
+            }
+        }
+
+        sudoku_updated
+    }
+
+    fn reduce_core(&self, dest: &mut Sudoku, coords: [(usize, usize); 9], k: usize) {
+        for xs in coords.iter().filter(|x| self.board[x.1][x.0].size() <= k).combinations(k) {
+            // ...
+            let mut compound_cell = Cell::from_choices_list([false; 9]);
+            for (x, y) in xs { for n in 0..9 { if self.board[*y][*x].can_be(n+1) { compound_cell.set_at(n+1) } }}
+
+            // ...
+            let cnt = compound_cell.size();
+            if cnt == k {
+                for (x, y) in coords {
+                    if dest.board[y][x].difference(&compound_cell).size() > 0 {
+                        for n in 0..9 { if compound_cell.can_be(n+1) { dest.board[y][x].unset_at(n+1); }}
                     }
                 }
             }
+            else if cnt < k { panic!("Fatal Error: Candidates are less than cells. "); }
         }
-        sudoku_updated
+
     }
 }
+
 
 impl fmt::Display for Sudoku {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
